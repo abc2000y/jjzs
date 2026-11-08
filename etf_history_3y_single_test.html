@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ETF三年历史数据测试</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f4f6fa;color:#1f2937;font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+main{max-width:760px;margin:auto;padding:18px}h1{font-size:22px;margin:8px 0}.sub,.note{color:#64748b;font-size:13px}
+.panel,.result{background:#fff;border-radius:12px;padding:16px;margin:14px 0;box-shadow:0 2px 10px #0000000a}
+select,button{font:inherit;border-radius:8px;padding:10px 12px}select{border:1px solid #cbd5e1;background:white;width:100%;margin:6px 0 12px}
+button{background:#1769d2;color:#fff;border:0;width:100%}button:disabled{opacity:.55}
+.status{margin:12px 0;color:#475569;overflow-wrap:anywhere}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:12px 0}
+.metric{background:#f8fafc;padding:10px;border-radius:8px}.metric small{display:block;color:#64748b}.metric b{font-size:17px}
+canvas{width:100%;height:220px;display:block}.good{color:#087443}.warn{color:#b45309}.bad{color:#b91c1c}
+</style>
+</head>
+<body><main>
+<h1>ETF 三年历史数据测试</h1>
+<div class="sub">腾讯历史日K｜单只基金查询｜按年度分段获取｜前复权</div>
+<section class="panel">
+  <label for="fund">选择一只基金</label>
+  <select id="fund">
+    <option value="sh510300">510300 沪深300ETF</option>
+    <option value="sh518880">518880 黄金ETF</option>
+    <option value="sz159915">159915 创业板ETF</option>
+  </select>
+  <button id="runBtn" onclick="runTest()">获取这只基金近三年数据</button>
+  <div id="status" class="status">请选择基金后开始。一次只请求一只，完成后再查询下一只。</div>
+  <div class="note">预计约750条日K线，实际数量以腾讯接口返回为准。不会用模拟数据或0值填补缺失数据。</div>
+</section>
+<section id="result" class="result" hidden></section>
+<script>
+const TODAY=new Date();
+const END=`${TODAY.getFullYear()}-${String(TODAY.getMonth()+1).padStart(2,"0")}-${String(TODAY.getDate()).padStart(2,"0")}`;
+const START=new Date(TODAY);START.setFullYear(START.getFullYear()-3);
+const START_DATE=`${START.getFullYear()}-${String(START.getMonth()+1).padStart(2,"0")}-${String(START.getDate()).padStart(2,"0")}`;
+let seq=0;
+
+function segments(){
+  const out=[];let y=START.getFullYear();
+  while(y<=TODAY.getFullYear()){
+    const s=y===START.getFullYear()?START_DATE:`${y}-01-01`;
+    const e=y===TODAY.getFullYear()?END:`${y}-12-31`;
+    out.push([s,e]);y++;
+  }
+  return out;
+}
+function fetchPart(code,start,end){
+  return new Promise((resolve,reject)=>{
+    const cb="tencent_etf_cb_"+(++seq),script=document.createElement("script");
+    let settled=false;
+    const timer=setTimeout(()=>finish(new Error("请求超时（15秒）")),15000);
+    function finish(err,data){
+      if(settled)return;settled=true;clearTimeout(timer);script.remove();
+      try{delete window[cb]}catch(e){window[cb]=undefined}
+      err?reject(err):resolve(data);
+    }
+    window[cb]=data=>finish(null,data);
+    script.onerror=()=>finish(new Error("腾讯接口脚本加载失败"));
+    const param=`${code},day,${start},${end},300,qfq`;
+    script.src=`https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?_var=${cb}&param=${encodeURIComponent(param)}&_=${Date.now()}`;
+    document.head.appendChild(script);
+  });
+}
+function readRows(obj,code){
+  const node=obj?.data?.[code];if(!node)throw Error("返回数据中没有该基金代码");
+  return (node.qfqday||node.day||[]).map(r=>({
+    date:String(r[0]),open:Number(r[1]),close:Number(r[2]),high:Number(r[3]),low:Number(r[4]),volume:Number(r[5])
+  })).filter(r=>r.date&&[r.open,r.close,r.high,r.low].every(Number.isFinite));
+}
+function returnByDays(rows,days){
+  if(rows.length<2)return null;
+  const last=rows[rows.length-1],target=new Date(last.date+"T00:00:00");
+  target.setDate(target.getDate()-days);let base=null;
+  for(const r of rows){if(new Date(r.date+"T00:00:00")<=target)base=r;else break}
+  return base&&base.close>0?(last.close/base.close-1)*100:null;
+}
+function maxDD(rows){
+  let peak=-Infinity,dd=0;
+  for(const r of rows){peak=Math.max(peak,r.close);dd=Math.min(dd,r.close/peak-1)}
+  return dd*100;
+}
+function vol(rows){
+  const a=[];for(let i=1;i<rows.length;i++)if(rows[i-1].close>0)a.push(rows[i].close/rows[i-1].close-1);
+  if(a.length<2)return null;const m=a.reduce((s,x)=>s+x,0)/a.length;
+  return Math.sqrt(a.reduce((s,x)=>s+(x-m)**2,0)/(a.length-1))*Math.sqrt(252)*100;
+}
+function fmt(x){return x===null||!Number.isFinite(x)?"数据不足":`${x>=0?"+":""}${x.toFixed(2)}%`}
+function chart(canvas,rows){
+  const ctx=canvas.getContext("2d"),w=canvas.width=canvas.clientWidth*devicePixelRatio,h=canvas.height=canvas.clientHeight*devicePixelRatio;
+  ctx.clearRect(0,0,w,h);if(rows.length<2)return;
+  const vals=rows.map(r=>r.close),min=Math.min(...vals),max=Math.max(...vals),pad=16*devicePixelRatio;
+  ctx.strokeStyle="#2563eb";ctx.lineWidth=2*devicePixelRatio;ctx.beginPath();
+  vals.forEach((v,i)=>{const x=pad+i/(vals.length-1)*(w-2*pad),y=h-pad-(v-min)/(max-min||1)*(h-2*pad);i?ctx.lineTo(x,y):ctx.moveTo(x,y)});ctx.stroke();
+}
+async function runTest(){
+  const code=document.getElementById("fund").value,btn=document.getElementById("runBtn");
+  const status=document.getElementById("status"),box=document.getElementById("result");
+  btn.disabled=true;box.hidden=false;box.innerHTML="正在获取数据……";
+  const parts=segments(),all=new Map(),errors=[];
+  for(let i=0;i<parts.length;i++){
+    const [s,e]=parts[i];status.textContent=`正在获取 ${code}：第 ${i+1}/${parts.length} 段（${s} 至 ${e}）`;
+    try{const obj=await fetchPart(code,s,e);readRows(obj,code).forEach(r=>all.set(r.date,r));}
+    catch(err){errors.push(`${s}～${e}：${err.message}`)}
+    if(i<parts.length-1)await new Promise(r=>setTimeout(r,300));
+  }
+  const rows=[...all.values()].sort((a,b)=>a.date.localeCompare(b.date));
+  const name=document.querySelector(`#fund option[value="${code}"]`).textContent;
+  const first=rows[0],last=rows[rows.length-1];
+  const html=`<h2 style="font-size:18px;margin:0 0 8px">${name}</h2>
+    <div>历史记录：<b>${rows.length}</b> 条</div>
+    <div>数据区间：${first?.date||"无数据"} 至 ${last?.date||"无数据"}</div>
+    <div class="grid">
+      <div class="metric"><small>近1个月收益</small><b>${fmt(returnByDays(rows,30))}</b></div>
+      <div class="metric"><small>近3个月收益</small><b>${fmt(returnByDays(rows,90))}</b></div>
+      <div class="metric"><small>近1年收益</small><b>${fmt(returnByDays(rows,365))}</b></div>
+      <div class="metric"><small>近3年收益</small><b>${fmt(returnByDays(rows,365*3))}</b></div>
+      <div class="metric"><small>区间最大回撤</small><b>${fmt(rows.length?maxDD(rows):null)}</b></div>
+      <div class="metric"><small>年化波动率</small><b>${fmt(rows.length?vol(rows):null)}</b></div>
+    </div><canvas id="priceChart"></canvas>
+    <p class="note ${errors.length?"warn":"good"}">${errors.length?"有分段请求失败："+errors.join("；"):"所有分段请求完成"}</p>
+    <p class="note">数据为腾讯接口返回的前复权日K。收益率按目标日之前最近一个交易日收盘价计算；最大回撤、波动率为本次取得区间的计算结果，不代表未来表现。</p>`;
+  box.innerHTML=html;
+  if(rows.length)chart(document.getElementById("priceChart"),rows);
+  try{localStorage.setItem("tencent_etf_"+code,JSON.stringify({savedAt:new Date().toISOString(),rows}));}catch(e){}
+  status.textContent=errors.length?"本次完成，但存在请求失败，请检查上方提示。":"本次获取完成。可以切换另一只基金，再单独查询。";
+  btn.disabled=false;
+}
+</script></main></body></html>
