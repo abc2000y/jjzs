@@ -1,0 +1,237 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>腾讯历史行情测试</title>
+<style>
+body{margin:0;padding:15px;background:#f3f5f8;
+font-family:Arial,"Microsoft YaHei",sans-serif;color:#263238}
+.wrap{max-width:850px;margin:auto}
+.card{background:white;padding:15px;border-radius:10px;
+margin:12px 0;box-shadow:0 2px 8px #0000000c}
+button{background:#1769aa;color:white;border:0;padding:12px 22px;
+border-radius:6px;font-size:15px}
+.status{margin:10px 0}
+.ok{color:#16834a}.fail{color:#c0392b}.wait{color:#b07813}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th,td{padding:8px 4px;border-bottom:1px solid #eee;text-align:right}
+th:first-child,td:first-child{text-align:left}
+.table-wrap{overflow-x:auto}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px;
+max-height:180px;overflow:auto}
+.small{font-size:12px;color:#777}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h2 style="text-align:center">腾讯历史行情测试</h2>
+<p class="small" style="text-align:center">
+腾讯日K线 · 前复权 · 首批三个ETF
+</p>
+
+<div class="card">
+<b>测试内容</b>
+<p>获取最近300条日K线，检查日期、开盘、收盘、最高、最低和成交量。</p>
+<p class="small">前复权数据用于技术分析；原始返回内容也会保留供检查。</p>
+<button id="btn" onclick="runTest()">开始历史行情测试</button>
+<div id="summary" class="status wait">尚未测试</div>
+</div>
+
+<div id="results"></div>
+</div>
+
+<script>
+const stocks=[
+ {code:"sh510300",name:"沪深300ETF"},
+ {code:"sh518880",name:"黄金ETF"},
+ {code:"sz159915",name:"创业板ETF"}
+];
+
+function loadScript(url,timeout=15000){
+ return new Promise((resolve,reject)=>{
+  const s=document.createElement("script");
+  let done=false;
+  const timer=setTimeout(()=>finish(new Error("请求超时")),timeout);
+
+  function finish(err){
+   if(done)return;
+   done=true;
+   clearTimeout(timer);
+   s.remove();
+   err?reject(err):resolve();
+  }
+  s.onload=()=>finish();
+  s.onerror=()=>finish(new Error("历史行情脚本加载失败"));
+  s.src=url;
+  document.head.appendChild(s);
+ });
+}
+
+function getKline(stock){
+ return new Promise(async(resolve,reject)=>{
+  const variable="kline_dayqfq";
+  try{
+   window[variable]=undefined;
+
+   const start="2025-01-01";
+   const end=new Date().toISOString().slice(0,10);
+
+   const param=[
+    stock.code,"day",start,end,"300","qfq"
+   ].join(",");
+
+   const url=
+    "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"+
+    "?_var="+variable+
+    "&param="+encodeURIComponent(param)+
+    "&_="+Date.now();
+
+   await loadScript(url);
+
+   const obj=window[variable];
+
+   if(!obj || !obj.data){
+    throw new Error("没有收到有效K线数据");
+   }
+
+   const node=obj.data[stock.code];
+
+   if(!node){
+    throw new Error("返回结果中没有该ETF代码");
+   }
+
+   // 不同标的可能使用不同字段名
+   const rows=node.qfqday || node.day;
+
+   if(!Array.isArray(rows) || rows.length===0){
+    throw new Error("没有找到历史K线记录");
+   }
+
+   const data=rows.map(r=>{
+    if(!Array.isArray(r)||r.length<6)return null;
+    const item={
+     date:r[0],
+     open:Number(r[1]),
+     close:Number(r[2]),
+     high:Number(r[3]),
+     low:Number(r[4]),
+     volume:Number(r[5])
+    };
+
+    if(!item.date ||
+       ![item.open,item.close,item.high,item.low].every(Number.isFinite)){
+      return null;
+    }
+    return item;
+   }).filter(Boolean);
+
+   if(data.length===0){
+    throw new Error("K线数据格式无法解析");
+   }
+
+   resolve({
+    data,
+    key:node.qfqday?"qfqday":"day",
+    raw:JSON.stringify(obj)
+   });
+
+  }catch(e){
+   reject(e);
+  }
+ });
+}
+
+function escapeHTML(s){
+ return String(s??"").replace(/[&<>"']/g,c=>({
+  "&":"&amp;","<":"&lt;",">":"&gt;",
+  '"':"&quot;","'":"&#39;"
+ }[c]));
+}
+
+function render(stock,result){
+ if(!result.ok){
+  return `
+  <div class="card">
+   <h3>${stock.name} (${stock.code})</h3>
+   <div class="fail">读取失败：${escapeHTML(result.error)}</div>
+  </div>`;
+ }
+
+ const rows=result.data;
+ const recent=rows.slice(-10).reverse();
+
+ return `
+ <div class="card">
+  <h3>${stock.name} (${stock.code})</h3>
+  <div class="ok">读取成功</div>
+  <p>记录数量：${rows.length} 条</p>
+  <p>数据字段：${result.key}</p>
+  <p>最新记录：${escapeHTML(rows[rows.length-1].date)}</p>
+  <p>最早记录：${escapeHTML(rows[0].date)}</p>
+  <div class="table-wrap">
+  <table>
+   <thead><tr>
+    <th>日期</th><th>开盘</th><th>收盘</th>
+    <th>最高</th><th>最低</th><th>成交量</th>
+   </tr></thead>
+   <tbody>
+    ${recent.map(r=>`
+    <tr>
+     <td>${escapeHTML(r.date)}</td>
+     <td>${r.open}</td><td>${r.close}</td>
+     <td>${r.high}</td><td>${r.low}</td>
+     <td>${r.volume}</td>
+    </tr>`).join("")}
+   </tbody>
+  </table>
+  </div>
+  <details>
+   <summary>查看原始数据</summary>
+   <pre>${escapeHTML(result.raw)}</pre>
+  </details>
+ </div>`;
+}
+
+async function runTest(){
+ const btn=document.getElementById("btn");
+ const summary=document.getElementById("summary");
+ const results=document.getElementById("results");
+
+ btn.disabled=true;
+ results.innerHTML="";
+ summary.className="status wait";
+ summary.textContent="正在获取历史K线……";
+
+ let success=0;
+ let failure=0;
+
+ try{
+  for(const stock of stocks){
+   const box=document.createElement("div");
+   box.innerHTML=`<div class="card">${stock.name}：正在读取……</div>`;
+   results.appendChild(box);
+
+   try{
+    const r=await getKline(stock);
+    success++;
+    box.innerHTML=render(stock,{ok:true,...r});
+   }catch(e){
+    failure++;
+    box.innerHTML=render(stock,{ok:false,error:e.message});
+   }
+  }
+
+  summary.className="status "+(success?"ok":"fail");
+  summary.textContent=
+   `测试完成：成功 ${success} 只，失败 ${failure} 只。`+
+   `测试时间：${new Date().toLocaleString()}`;
+
+ }finally{
+  btn.disabled=false;
+ }
+}
+</script>
+</body>
+</html>
