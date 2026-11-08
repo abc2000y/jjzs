@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ETF五年历史数据测试</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f4f6fa;color:#1f2937;font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+main{max-width:980px;margin:auto;padding:18px}h1{font-size:22px;margin:8px 0} .sub{color:#64748b;font-size:13px}
+.panel{background:#fff;border-radius:12px;padding:16px;margin:14px 0;box-shadow:0 2px 10px #0000000a}
+button{background:#1769d2;color:#fff;border:0;border-radius:8px;padding:11px 18px;font-size:15px}
+button:disabled{opacity:.55}.status{margin:12px 0;color:#475569}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}
+.card{border:1px solid #e5e7eb;border-radius:10px;padding:13px}.card h3{margin:0 0 8px;font-size:17px}
+.good{color:#087443}.warn{color:#b45309}.bad{color:#b91c1c}
+table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:7px;border-bottom:1px solid #e5e7eb;text-align:left}
+canvas{width:100%;height:220px;display:block}.note{font-size:12px;color:#64748b}
+</style>
+</head>
+<body><main>
+<h1>ETF 五年历史数据扩展测试</h1>
+<div class="sub">数据源：腾讯证券历史K线接口｜复权方式：前复权｜仅作数据获取与计算验证</div>
+<div class="panel">
+  <p>本页按年度分段请求，避免一次请求被限制在约300条。测试对象：510300、518880、159915。</p>
+  <button id="runBtn" onclick="runTest()">开始获取五年数据</button>
+  <div id="status" class="status">尚未开始</div>
+  <div class="note">说明：A股约每年250个交易日。五年数据理论上约1250条；接口实际返回多少，以页面统计为准。若某段失败，会单独标出，不会用0补齐。</div>
+</div>
+<div id="results" class="cards"></div>
+<script>
+const FUNDS = [
+  {code:"sh510300",label:"510300 沪深300ETF"},
+  {code:"sh518880",label:"518880 黄金ETF"},
+  {code:"sz159915",label:"159915 创业板ETF"}
+];
+const TODAY = new Date();
+const END = `${TODAY.getFullYear()}-${String(TODAY.getMonth()+1).padStart(2,"0")}-${String(TODAY.getDate()).padStart(2,"0")}`;
+const START_YEAR = TODAY.getFullYear()-5;
+let callbackSeq = 0;
+
+function requestSegment(code,start,end){
+  return new Promise((resolve,reject)=>{
+    const cb = "tencent_kline_cb_" + (++callbackSeq);
+    const script = document.createElement("script");
+    let finished = false;
+    const timer = setTimeout(()=>finish(new Error("请求超时")),15000);
+    function finish(err,data){
+      if(finished)return; finished=true; clearTimeout(timer);
+      script.remove();
+      try{delete window[cb]}catch(e){window[cb]=undefined}
+      err ? reject(err) : resolve(data);
+    }
+    window[cb] = obj => finish(null,obj);
+    script.onerror = ()=>finish(new Error("接口脚本加载失败"));
+    const param = `${code},day,${start},${end},300,qfq`;
+    script.src = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?_var="+cb+
+      "&param="+encodeURIComponent(param)+"&_="+Date.now();
+    document.head.appendChild(script);
+  });
+}
+function parseRows(obj,code){
+  const node = obj && obj.data && obj.data[code];
+  if(!node) throw new Error("返回数据中没有该代码");
+  const rows = node.qfqday || node.day || [];
+  return rows.map(r=>({
+    date:String(r[0]), open:Number(r[1]), close:Number(r[2]),
+    high:Number(r[3]), low:Number(r[4]), volume:Number(r[5])
+  })).filter(x=>x.date && [x.open,x.close,x.high,x.low].every(Number.isFinite));
+}
+function yearSegments(){
+  const segs=[];
+  for(let y=START_YEAR;y<=TODAY.getFullYear();y++){
+    const s = y===START_YEAR ? `${y}-${String(TODAY.getMonth()+1).padStart(2,"0")}-${String(TODAY.getDate()).padStart(2,"0")}` : `${y}-01-01`;
+    const e = y===TODAY.getFullYear() ? END : `${y}-12-31`;
+    segs.push([s,e]);
+  }
+  return segs;
+}
+function pct(a,b){return b ? (a/b-1)*100 : null}
+function maxDrawdown(rows){
+  let peak=-Infinity,dd=0;
+  for(const r of rows){peak=Math.max(peak,r.close);dd=Math.min(dd,r.close/peak-1)}
+  return dd*100;
+}
+function volatility(rows){
+  const rets=[];
+  for(let i=1;i<rows.length;i++) if(rows[i-1].close>0) rets.push(rows[i].close/rows[i-1].close-1);
+  if(rets.length<2)return null;
+  const mean=rets.reduce((a,b)=>a+b,0)/rets.length;
+  const variance=rets.reduce((s,x)=>s+(x-mean)**2,0)/(rets.length-1);
+  return Math.sqrt(variance)*Math.sqrt(252)*100;
+}
+function nearestReturn(rows,days){
+  if(rows.length<2)return null;
+  const last=rows[rows.length-1];
+  const target=new Date(last.date+"T00:00:00");
+  target.setDate(target.getDate()-days);
+  let base=null;
+  for(const r of rows){if(new Date(r.date+"T00:00:00")<=target)base=r;else break}
+  return base?pct(last.close,base.close):null;
+}
+function fmt(v){return v===null||!Number.isFinite(v)?"数据不足":v.toFixed(2)+"%"}
+function draw(canvas,rows){
+  const ctx=canvas.getContext("2d"),w=canvas.width=canvas.clientWidth*devicePixelRatio,h=canvas.height=canvas.clientHeight*devicePixelRatio;
+  ctx.clearRect(0,0,w,h); if(rows.length<2)return;
+  const vals=rows.map(x=>x.close),min=Math.min(...vals),max=Math.max(...vals),pad=18*devicePixelRatio;
+  ctx.strokeStyle="#2563eb";ctx.lineWidth=2*devicePixelRatio;ctx.beginPath();
+  vals.forEach((v,i)=>{const x=pad+i/(vals.length-1)*(w-2*pad),y=h-pad-(v-min)/(max-min||1)*(h-2*pad);i?ctx.lineTo(x,y):ctx.moveTo(x,y)});
+  ctx.stroke();
+}
+async function runTest(){
+  const btn=document.getElementById("runBtn"),status=document.getElementById("status"),out=document.getElementById("results");
+  btn.disabled=true;out.innerHTML="";
+  const segs=yearSegments();let done=0,total=FUNDS.length*segs.length;
+  status.textContent=`准备请求 ${total} 个年度分段……`;
+  for(const fund of FUNDS){
+    const byDate=new Map(),errors=[];
+    for(const [s,e] of segs){
+      try{
+        const obj=await requestSegment(fund.code,s,e);
+        parseRows(obj,fund.code).forEach(r=>byDate.set(r.date,r));
+      }catch(err){errors.push(`${s}～${e}：${err.message}`)}
+      done++;status.textContent=`正在获取：${fund.label}（${done}/${total}）`;
+      await new Promise(r=>setTimeout(r,250));
+    }
+    const rows=[...byDate.values()].sort((a,b)=>a.date.localeCompare(b.date));
+    const first=rows[0],last=rows[rows.length-1];
+    const r1=nearestReturn(rows,365),r3=nearestReturn(rows,365*3),r5=nearestReturn(rows,365*5);
+    const id="chart_"+fund.code;
+    const card=document.createElement("section");card.className="card";
+    card.innerHTML=`<h3>${fund.label}</h3>
+      <div>记录数：<b>${rows.length}</b> 条</div>
+      <div>数据区间：${first?first.date:"无"} 至 ${last?last.date:"无"}</div>
+      <div>1年收益：${fmt(r1)}　3年：${fmt(r3)}　5年：${fmt(r5)}</div>
+      <div>最大回撤：${fmt(rows.length?maxDrawdown(rows):null)}</div>
+      <div>年化波动率：${fmt(rows.length?volatility(rows):null)}</div>
+      <canvas id="${id}"></canvas>
+      <div class="note ${errors.length?"warn":"good"}">${errors.length?"部分请求失败："+errors.join("；"):"年度分段请求完成"}</div>`;
+    out.appendChild(card);
+    const canvas=document.getElementById(id);draw(canvas,rows);
+    try{localStorage.setItem("tencent_kline_"+fund.code,JSON.stringify({updatedAt:new Date().toISOString(),rows}))}catch(e){}
+  }
+  status.textContent="获取完成。请检查每只ETF的记录数、起止日期及错误提示。数据已尝试缓存在本机浏览器。";
+  btn.disabled=false;
+}
+</script>
+</main></body></html>
