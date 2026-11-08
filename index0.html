@@ -1,0 +1,379 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>新浪与腾讯行情接口测试</title>
+<style>
+* { box-sizing: border-box; }
+body {
+    margin: 0;
+    padding: 16px;
+    background: #f3f5f8;
+    color: #263238;
+    font-family: Arial, "Microsoft YaHei", sans-serif;
+}
+.container {
+    max-width: 850px;
+    margin: auto;
+}
+h2 { text-align: center; }
+.subtitle {
+    text-align: center;
+    color: #687782;
+    font-size: 13px;
+}
+.card {
+    background: white;
+    border-radius: 10px;
+    padding: 16px;
+    margin: 14px 0;
+    box-shadow: 0 2px 8px #0000000c;
+}
+button {
+    border: 0;
+    background: #1769aa;
+    color: white;
+    border-radius: 6px;
+    padding: 12px 22px;
+    font-size: 15px;
+    cursor: pointer;
+}
+button:disabled { opacity: .5; }
+.actions { text-align: center; margin: 18px 0; }
+.stock {
+    border-bottom: 1px solid #eee;
+    padding: 12px 0;
+}
+.stock:last-child { border: 0; }
+.stock-name {
+    font-weight: bold;
+    font-size: 17px;
+}
+.code { color: #777; font-size: 13px; }
+.source {
+    margin-top: 9px;
+    padding: 10px;
+    border-radius: 6px;
+    background: #f7f8fa;
+    font-size: 13px;
+    overflow-wrap: anywhere;
+}
+.ok { color: #16834a; }
+.fail { color: #c0392b; }
+.wait { color: #b07813; }
+pre {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font-size: 12px;
+    color: #555;
+    max-height: 150px;
+    overflow: auto;
+}
+.small { color: #888; font-size: 12px; }
+</style>
+</head>
+
+<body>
+<div class="container">
+
+<h2>A股基金智能分析助手</h2>
+<div class="subtitle">新浪优先 · 腾讯备用 · 真实行情接口测试</div>
+
+<div class="card">
+    <b>测试说明</b>
+    <p>本页面使用浏览器动态加载行情脚本，测试接口是否能够返回数据。</p>
+    <p class="small">
+    测试代码：510300、518880、159915。<br>
+    行情可能有延迟，具体以数据源实际返回为准。
+    </p>
+</div>
+
+<div class="actions">
+    <button id="testBtn" onclick="runTest()">开始测试</button>
+</div>
+
+<div class="card">
+    <b>测试结果</b>
+    <div id="summary" class="wait">尚未开始测试</div>
+    <div id="results"></div>
+</div>
+
+<div class="card">
+    <b>接口及数据说明</b>
+    <div class="small">
+    新浪接口：hq.sinajs.cn<br>
+    腾讯接口：qt.gtimg.cn<br>
+    本测试使用动态脚本读取，不使用模拟行情。<br>
+    如果浏览器或数据源限制访问，会显示失败，不会用零值代替。
+    </div>
+</div>
+
+</div>
+
+<script>
+const stocks = [
+    { code: "510300", name: "沪深300ETF", market: "sh" },
+    { code: "518880", name: "黄金ETF", market: "sh" },
+    { code: "159915", name: "创业板ETF", market: "sz" }
+];
+
+function addScript(url, timeout = 10000) {
+    return new Promise((resolve, reject) => {
+        const script = document.createElement("script");
+        let finished = false;
+
+        const timer = setTimeout(() => {
+            finish(new Error("请求超时"));
+        }, timeout);
+
+        function finish(error) {
+            if (finished) return;
+            finished = true;
+            clearTimeout(timer);
+            script.remove();
+            error ? reject(error) : resolve();
+        }
+
+        script.onload = () => finish();
+        script.onerror = () => finish(new Error("脚本加载失败"));
+
+        script.src = url;
+        document.head.appendChild(script);
+    });
+}
+
+function formatNumber(value) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n.toFixed(3) : "无法解析";
+}
+
+function getSinaData(stock) {
+    return new Promise(async (resolve, reject) => {
+        const key = "hq_str_" + stock.market + stock.code;
+
+        try {
+            // 清除旧数据，避免把上一次结果误认为本次成功
+            window[key] = undefined;
+
+            const url =
+                "https://hq.sinajs.cn/list=" +
+                stock.market + stock.code +
+                "&_=" + Date.now();
+
+            await addScript(url);
+
+            const raw = window[key];
+
+            if (typeof raw !== "string" || !raw.trim()) {
+                throw new Error("没有收到有效行情内容");
+            }
+
+            const p = raw.split(",");
+
+            if (p.length < 6 || !p[0]) {
+                throw new Error("返回数据格式异常");
+            }
+
+            const data = {
+                name: p[0],
+                open: p[1],
+                prevClose: p[2],
+                price: p[3],
+                high: p[4],
+                low: p[5],
+                volume: p[8],
+                amount: p[9],
+                date: p[30] || "",
+                time: p[31] || ""
+            };
+
+            if (!Number.isFinite(Number(data.price)) ||
+                Number(data.price) <= 0) {
+                throw new Error("行情价格无效");
+            }
+
+            resolve({ data, raw });
+        } catch (e) {
+            reject(e);
+        }
+    });
+}
+
+function getTencentData(stock) {
+    return new Promise(async (resolve, reject) => {
+        const key = "v_" + stock.market + stock.code;
+
+        try {
+            window[key] = undefined;
+
+            const url =
+                "https://qt.gtimg.cn/q=" +
+                stock.market + stock.code +
+                "&_=" + Date.now();
+
+            await addScript(url);
+
+            const raw = window[key];
+
+            if (typeof raw !== "string" || !raw.trim()) {
+                throw new Error("没有收到有效行情内容");
+            }
+
+            const p = raw.split("~");
+
+            if (p.length < 6 || !p[1]) {
+                throw new Error("返回数据格式异常");
+            }
+
+            const data = {
+                name: p[1],
+                code: p[2],
+                price: p[3],
+                prevClose: p[4],
+                open: p[5],
+                volume: p[6],
+                amount: p[7],
+                date: p[30] || "",
+                time: p[31] || ""
+            };
+
+            if (!Number.isFinite(Number(data.price)) ||
+                Number(data.price) <= 0) {
+                throw new Error("行情价格无效");
+            }
+
+            resolve({ data, raw });
+        } catch (e) {
+            reject(e);
+        }
+    });
+}
+
+function renderSource(title, result) {
+    if (!result.ok) {
+        return `
+        <div class="source">
+            <b>${title}：</b>
+            <span class="fail">读取失败：${escapeHTML(result.error)}</span>
+        </div>`;
+    }
+
+    const d = result.data;
+
+    return `
+    <div class="source">
+        <b>${title}：</b>
+        <span class="ok">读取成功</span><br>
+        名称：${escapeHTML(d.name)}<br>
+        当前价格：<b>${formatNumber(d.price)}</b><br>
+        开盘：${formatNumber(d.open)}
+       　昨收：${formatNumber(d.prevClose)}<br>
+        最高：${formatNumber(d.high || "")}
+       　最低：${formatNumber(d.low || "")}<br>
+        成交量原始值：${escapeHTML(d.volume || "未提供")}<br>
+        成交额原始值：${escapeHTML(d.amount || "未提供")}<br>
+        <details>
+            <summary>查看原始返回内容</summary>
+            <pre>${escapeHTML(result.raw)}</pre>
+        </details>
+    </div>`;
+}
+
+function escapeHTML(value) {
+    return String(value ?? "").replace(/[&<>"']/g, c => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;"
+    })[c]);
+}
+
+async function testOne(stock) {
+    const sina = { ok: false, error: "" };
+    const tencent = { ok: false, error: "" };
+
+    try {
+        const r = await getSinaData(stock);
+        Object.assign(sina, {
+            ok: true,
+            data: r.data,
+            raw: r.raw
+        });
+    } catch (e) {
+        sina.error = e.message || "未知错误";
+    }
+
+    try {
+        const r = await getTencentData(stock);
+        Object.assign(tencent, {
+            ok: true,
+            data: r.data,
+            raw: r.raw
+        });
+    } catch (e) {
+        tencent.error = e.message || "未知错误";
+    }
+
+    return { sina, tencent };
+}
+
+async function runTest() {
+    const btn = document.getElementById("testBtn");
+    const results = document.getElementById("results");
+    const summary = document.getElementById("summary");
+
+    btn.disabled = true;
+    results.innerHTML = "";
+    summary.textContent = "正在读取行情数据……";
+    summary.className = "wait";
+
+    let success = 0;
+    let failure = 0;
+
+    try {
+        for (const stock of stocks) {
+            const box = document.createElement("div");
+            box.className = "stock";
+            box.innerHTML = `
+                <div class="stock-name">${stock.name}</div>
+                <div class="code">${stock.code}</div>
+                <div class="wait">正在测试新浪和腾讯……</div>
+            `;
+            results.appendChild(box);
+
+            const r = await testOne(stock);
+
+            if (r.sina.ok) success++;
+            else failure++;
+
+            if (r.tencent.ok) success++;
+            else failure++;
+
+            box.innerHTML = `
+                <div class="stock-name">${stock.name}</div>
+                <div class="code">${stock.code}</div>
+                ${renderSource("新浪", r.sina)}
+                ${renderSource("腾讯", r.tencent)}
+            `;
+        }
+
+        summary.className = success > 0 ? "ok" : "fail";
+        summary.textContent =
+            "测试完成：成功 " + success +
+            " 项，失败 " + failure +
+            " 项。测试时间：" + new Date().toLocaleString();
+
+    } catch (e) {
+        summary.className = "fail";
+        summary.textContent = "测试过程出现异常：" + e.message;
+    } finally {
+        btn.disabled = false;
+    }
+}
+</script>
+
+</body>
+</html>
